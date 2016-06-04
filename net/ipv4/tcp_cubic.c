@@ -49,7 +49,7 @@ static int initial_ssthresh __read_mostly;
 static int bic_scale __read_mostly = 41;
 static int tcp_friendliness __read_mostly = 1;
 
-static int hystart __read_mostly = 1;
+static int hystart __read_mostly = 0;
 static int hystart_detect __read_mostly = HYSTART_ACK_TRAIN | HYSTART_DELAY;
 static int hystart_low_window __read_mostly = 16;
 static int hystart_ack_delta __read_mostly = 2;
@@ -205,23 +205,30 @@ static u32 cubic_root(u64 a)
 /*
  * Compute congestion window to use.
  */
-static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
+static inline void bictcp_update(struct bictcp *ca, u32 cwnd, u32 acked)
 {
 	u32 delta, bic_target, max_cnt;
 	u64 offs, t;
 
-	ca->ack_cnt++;	/* count the number of ACKs */
+	ca->ack_cnt += acked;	/* count the number of ACKed packets */
 
 	if (ca->last_cwnd == cwnd &&
 	    (s32)(tcp_time_stamp - ca->last_time) <= HZ / 32)
 		return;
+
+	/* The CUBIC function can update ca->cnt at most once per jiffy.
+	 * On all cwnd reduction events, ca->epoch_start is set to 0,
+	 * which will force a recalculation of ca->cnt.
+	 */
+	if (ca->epoch_start && tcp_time_stamp == ca->last_time)
+		goto tcp_friendliness;
 
 	ca->last_cwnd = cwnd;
 	ca->last_time = tcp_time_stamp;
 
 	if (ca->epoch_start == 0) {
 		ca->epoch_start = tcp_time_stamp;	/* record beginning */
-		ca->ack_cnt = 1;			/* start counting */
+		ca->ack_cnt = acked;			/* start counting */
 		ca->tcp_cwnd = cwnd;			/* syn with cubic */
 
 		if (ca->last_max_cwnd <= cwnd) {
@@ -283,6 +290,7 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 	if (ca->last_max_cwnd == 0 && ca->cnt > 20)
 		ca->cnt = 20;	/* increase cwnd 5% per RTT */
 
+tcp_friendliness:
 	/* TCP Friendly */
 	if (tcp_friendliness) {
 		u32 scale = beta_scale;
@@ -301,10 +309,12 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 		}
 	}
 
-	ca->cnt = (ca->cnt << ACK_RATIO_SHIFT) / ca->delayed_ack;
-	if (ca->cnt == 0)			/* cannot be zero */
-		ca->cnt = 1;
+	/* The maximum rate of cwnd increase CUBIC allows is 1 packet per
+	 * 2 packets ACKed, meaning cwnd grows at 1.5x per RTT.
+	 */
+	ca->cnt = max(ca->cnt, 2U);
 }
+
 
 static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
@@ -317,12 +327,17 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tp->snd_cwnd <= tp->snd_ssthresh) {
 		if (hystart && after(ack, ca->end_seq))
 			bictcp_hystart_reset(sk);
+		if (hystart == 1)
+		  printk(KERN_INFO "10.0.0.2: hystart equals 1\n");
+		else
+		  printk(KERN_INFO "10.0.0.2: hystart equals 0\n");
 		tcp_slow_start(tp, acked);
 	} else {
-		bictcp_update(ca, tp->snd_cwnd);
-		tcp_cong_avoid_ai(tp, ca->cnt);
+		bictcp_update(ca, tp->snd_cwnd, acked);
+		tcp_cong_avoid_ai_new(tp, ca->cnt, acked);
 	}
 }
+
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
 {
