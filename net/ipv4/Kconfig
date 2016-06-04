@@ -638,6 +638,30 @@ config TCP_CONG_BALIA
 	Multipath TCP Balanced Linked Adaptation Congestion Control
 	To enable it, just put 'balia' in tcp_congestion_control
 
+config TCP_CONG_FCLIA
+	tristate "MPTCP FCLIA CONGESTION CONTROL"
+	depends on MPTCP
+	default n
+	---help---
+	Multipath TCP Fast Convergence Linked Adaptation Congestion Control
+	To enable it, just put 'fclia' in tcp_congestion_control
+
+config TCP_CONG_MPCUBIC
+	tristate "MPTCP MPCUBIC CONGESTION CONTROL"
+	depends on MPTCP
+	default n
+	---help---
+	Multipath Cubic Congestion Control
+	To enable it, just put 'mpcubic' in tcp_congestion_control
+
+config TCP_CONG_MPTCPW
+	tristate "MPTCP MPTCPW CONGESTION CONTROL"
+	depends on MPTCP
+	default n
+	---help---
+	Multipath westwood Congestion Control
+	To enable it, just put 'mptcpw' in tcp_congestion_control
+
 choice
 	prompt "Default TCP congestion control"
 	default DEFAULT_CUBIC
@@ -681,6 +705,15 @@ choice
 	config DEFAULT_BALIA
 		bool "Balia" if TCP_CONG_BALIA=y
 
+	config DEFAULT_FCLIA
+		bool "Fclia" if TCP_CONG_FCLIA=y
+
+	config DEFAULT_MPCUBIC
+		bool "Mpcubic" if TCP_CONG_MPCUBIC=y
+
+	config DEFAULT_MPTCPW
+		bool "Mptcpw" if TCP_CONG_MPTCPW=y
+
 	config DEFAULT_RENO
 		bool "Reno"
 endchoice
@@ -706,6 +739,9 @@ config DEFAULT_TCP_CONG
 	default "balia" if DEFAULT_BALIA
 	default "reno" if DEFAULT_RENO
 	default "dctcp" if DEFAULT_DCTCP
+	default "fclia" if DEFAULT_FCLIA
+	default "mpcubic" if DEFAULT_MPCUBIC
+	default "mptcpw" if DEFAULT_MPTCPW
 	default "cubic"
 
 config TCP_MD5SIG
