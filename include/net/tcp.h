@@ -1088,7 +1088,11 @@ static inline bool tcp_in_initial_slowstart(const struct tcp_sock *tp)
 
 static inline bool tcp_in_cwnd_reduction(const struct sock *sk)
 {
-	return (TCPF_CA_CWR | TCPF_CA_Recovery) &
+//	return (TCPF_CA_CWR | TCPF_CA_Recovery) &
+//	       (1 << inet_csk(sk)->icsk_ca_state);
+
+// ecn based loss differetiation only cwr state reduce cwnd
+	return (TCPF_CA_CWR ) &
 	       (1 << inet_csk(sk)->icsk_ca_state);
 }
 

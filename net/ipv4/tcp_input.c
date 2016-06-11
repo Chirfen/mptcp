@@ -79,6 +79,35 @@
 #include <net/mptcp_v4.h>
 #include <net/mptcp_v6.h>
 
+//added by zhuo
+#include <linux/socket.h>
+#include <linux/ktime.h>
+struct tcp_log {
+	ktime_t tstamp;
+	union {
+		struct sockaddr		raw;
+		struct sockaddr_in	v4;
+		struct sockaddr_in6	v6;
+	}	src, dst;
+	u16	length;
+	u32	snd_nxt;
+	u32	snd_una;
+	u32	snd_wnd;
+	u32	rcv_wnd;
+	u32	snd_cwnd;
+	u32	ssthresh;
+	u32	srtt;
+	u32 	ack_seq;
+	u32	ack;
+};
+#define tcp_probe_copy_fl_to_si4(inet, si4, mem)		\
+	do {							\
+		si4.sin_family = AF_INET;			\
+		si4.sin_port = inet->inet_##mem##port;		\
+		si4.sin_addr.s_addr = inet->inet_##mem##addr;	\
+	} while (0)						\
+
+
 int sysctl_tcp_timestamps __read_mostly = 1;
 int sysctl_tcp_window_scaling __read_mostly = 1;
 int sysctl_tcp_sack __read_mostly = 1;
@@ -1942,8 +1971,11 @@ void tcp_enter_loss(struct sock *sk)
 		tcp_ca_event(sk, CA_EVENT_LOSS);
 		tcp_init_undo(tp);
 	}
-	tp->snd_cwnd	   = 1;
-	tp->snd_cwnd_cnt   = 0;
+	//added by zhuo
+	//tp->snd_cwnd	   = 1;
+	//tp->snd_cwnd_cnt   = 0;
+	tp->prior_cwnd = tp->snd_cwnd;
+
 	tp->snd_cwnd_stamp = tcp_time_stamp;
 
 	tp->retrans_out = 0;
@@ -2401,7 +2433,9 @@ static void tcp_undo_cwnd_reduction(struct sock *sk, bool unmark_loss)
 		if (icsk->icsk_ca_ops->undo_cwnd)
 			tp->snd_cwnd = icsk->icsk_ca_ops->undo_cwnd(sk);
 		else
-			tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_ssthresh << 1);
+			//modified by zhuo
+			//tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_ssthresh << 1);
+			tp->snd_cwnd=tp->prior_cwnd;
 
 		if (tp->prior_ssthresh > tp->snd_ssthresh) {
 			tp->snd_ssthresh = tp->prior_ssthresh;
@@ -2487,6 +2521,20 @@ static bool tcp_try_undo_loss(struct sock *sk, bool frto_undo)
 	return false;
 }
 
+//added by zhuo
+static void tcp_recovery_init_cwnd_reduction(struct sock *sk)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	tp->high_seq = tp->snd_nxt;
+	tp->tlp_high_seq = 0;
+	tp->snd_cwnd_cnt = 0;
+	tp->prior_cwnd = tp->snd_cwnd;
+	tp->prr_delivered = 0;
+	tp->prr_out = 0;
+	tcp_ecn_queue_cwr(tp);
+}
+
 /* The cwnd reduction in CWR and Recovery use the PRR algorithm
  * https://datatracker.ietf.org/doc/draft-ietf-tcpm-proportional-rate-reduction/
  * It computes the number of packets to send (sndcnt) based on packets newly
@@ -2535,6 +2583,23 @@ static void tcp_cwnd_reduction(struct sock *sk, const int prior_unsacked,
 	tp->snd_cwnd = tcp_packets_in_flight(tp) + sndcnt;
 }
 
+//added by zhuo
+static inline void tcp_recovery_end_cwnd_reduction(struct sock *sk)
+{
+	printk(KERN_INFO "10.0.0.2: end cwnd reduction \n");
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (tp->prior_ssthresh)
+		tp->snd_ssthresh=tp->prior_ssthresh;
+	/* Reset cwnd to ssthresh in CWR or Recovery (unless it's undone) */
+	if (inet_csk(sk)->icsk_ca_state == TCP_CA_CWR ||
+	    (tp->undo_marker && tp->snd_ssthresh < TCP_INFINITE_SSTHRESH)) {
+		//tp->snd_cwnd = tp->prior_cwnd;
+		tp->snd_cwnd_stamp = tcp_time_stamp;
+	}
+	tcp_ca_event(sk, CA_EVENT_COMPLETE_CWR);
+}
+
 static inline void tcp_end_cwnd_reduction(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2554,10 +2619,19 @@ void tcp_enter_cwr(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	tp->prior_ssthresh = 0;
-	if (inet_csk(sk)->icsk_ca_state < TCP_CA_CWR) {
+
+//modified by zhuo
+//	if (inet_csk(sk)->icsk_ca_state < TCP_CA_CWR) {
+//		tp->undo_marker = 0;
+//		tcp_init_cwnd_reduction(sk);
+//		tcp_set_ca_state(sk, TCP_CA_CWR);
+//	}
+	if (inet_csk(sk)->icsk_ca_state < TCP_CA_CWR || inet_csk(sk)->icsk_ca_state== TCP_CA_Recovery) {
 		tp->undo_marker = 0;
 		tcp_init_cwnd_reduction(sk);
 		tcp_set_ca_state(sk, TCP_CA_CWR);
+		printk(KERN_INFO "10.0.0.2: enter cwr:%u,%u\n",tp->snd_cwnd,tp->snd_ssthresh);
+		tp->snd_cwnd=tp->snd_ssthresh;
 	}
 }
 
@@ -2590,7 +2664,8 @@ static void tcp_try_to_open(struct sock *sk, int flag, const int prior_unsacked)
 	if (inet_csk(sk)->icsk_ca_state != TCP_CA_CWR) {
 		tcp_try_keep_open(sk);
 	} else {
-		tcp_cwnd_reduction(sk, prior_unsacked, 0);
+		//added by zhuo
+		//tcp_cwnd_reduction(sk, prior_unsacked, 0);
 	}
 }
 
@@ -2686,11 +2761,15 @@ static void tcp_enter_recovery(struct sock *sk, bool ece_ack)
 
 	tp->prior_ssthresh = 0;
 	tcp_init_undo(tp);
+//zhuo a little bit differnet to kernel 4.5
+//	if (!tcp_in_cwnd_reduction(sk)) {
 
 	if (inet_csk(sk)->icsk_ca_state < TCP_CA_CWR) {
 		if (!ece_ack)
 			tp->prior_ssthresh = tcp_current_ssthresh(sk);
-		tcp_init_cwnd_reduction(sk);
+		//added by zhuo
+		//tcp_init_cwnd_reduction(sk);
+		tcp_recovery_init_cwnd_reduction(sk);
 	}
 	tcp_set_ca_state(sk, TCP_CA_Recovery);
 }
@@ -2833,9 +2912,19 @@ static void tcp_fastretrans_alert(struct sock *sk, const int acked,
 		case TCP_CA_Recovery:
 			if (tcp_is_reno(tp))
 				tcp_reset_reno_sack(tp);
-			if (tcp_try_undo_recovery(sk))
+			//if (tcp_try_undo_recovery(sk))
+				//return;
+			if(tcp_try_undo_recovery(sk)){
+				//added by zhuo
+				if (tp->prior_ssthresh)
+					tp->snd_ssthresh=tp->prior_ssthresh;
+				tp->snd_cwnd = tp->prior_cwnd;
+				printk(KERN_INFO "10.0.0.2: undo_recovery\n");
 				return;
-			tcp_end_cwnd_reduction(sk);
+			}
+			//tcp_end_cwnd_reduction(sk);
+			//added by zhuo
+			tcp_recovery_end_cwnd_reduction(sk);
 			break;
 		}
 	}
@@ -2856,6 +2945,10 @@ static void tcp_fastretrans_alert(struct sock *sk, const int acked,
 		if (tcp_try_undo_dsack(sk)) {
 			tcp_try_keep_open(sk);
 			return;
+		}
+		//added by zhuo
+		if(flag & FLAG_ECE){
+			tcp_enter_cwr(sk);
 		}
 		break;
 	case TCP_CA_Loss:
@@ -2891,13 +2984,20 @@ static void tcp_fastretrans_alert(struct sock *sk, const int acked,
 		}
 
 		/* Otherwise enter Recovery state */
-		tcp_enter_recovery(sk, (flag & FLAG_ECE));
+		//added by zhuo
+		if(flag & FLAG_ECE){
+			tcp_enter_cwr(sk);
+		}
+		else if(icsk->icsk_ca_state!=TCP_CA_CWR)
+			tcp_enter_recovery(sk, (flag & FLAG_ECE));
 		fast_rexmit = 1;
 	}
 
 	if (do_lost)
 		tcp_update_scoreboard(sk, fast_rexmit);
-	tcp_cwnd_reduction(sk, prior_unsacked, fast_rexmit);
+	//added by zhuo
+	printk(KERN_INFO "10.0.0.2: omit cwnd redution\n");
+	//tcp_cwnd_reduction(sk, prior_unsacked, fast_rexmit, flag);
 	tcp_xmit_retransmit_queue(sk);
 }
 
@@ -3518,8 +3618,59 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 		mptcp_clean_rtx_infinite(skb, sk);
 	}
 
+	//added by zhuo,probe output
+	struct tcp_log p;
+	const struct inet_sock *inet_ip = inet_sk(sk);
+	struct timespec tv;
+
+	p.tstamp = ktime_get();
+	switch (sk->sk_family) {
+		case AF_INET:
+			tcp_probe_copy_fl_to_si4(inet_ip, p.src.v4, s);
+			tcp_probe_copy_fl_to_si4(inet_ip, p.dst.v4, d);
+			break;
+		case AF_INET6:
+			memset(&(p.src.v6), 0, sizeof(p.src.v6));
+			memset(&(p.dst.v6), 0, sizeof(p.dst.v6));
+#if IS_ENABLED(CONFIG_IPV6)
+			p.src.v6.sin6_family = AF_INET6;
+			p.src.v6.sin6_port = inet_ip->inet_sport;
+			p.src.v6.sin6_addr = inet6_sk(sk)->saddr;
+
+			p.dst.v6.sin6_family = AF_INET6;
+			p.dst.v6.sin6_port = inet_ip->inet_dport;
+			p.dst.v6.sin6_addr = sk->sk_v6_daddr;
+#endif
+			break;
+		default:
+			BUG();
+		}
+
+		p.length = skb->len;
+		p.snd_nxt = tp->snd_nxt;
+		p.snd_una = tp->snd_una;
+		p.snd_cwnd = tp->snd_cwnd;
+		p.snd_wnd = tp->snd_wnd;
+		p.rcv_wnd = tp->rcv_wnd;
+		p.ssthresh = tcp_current_ssthresh(sk);
+		p.srtt = tp->srtt_us >> 3;
+
+		//add by zhuo
+		p.ack_seq = TCP_SKB_CB(skb)->seq;
+		p.ack= TCP_SKB_CB(skb)->ack_seq;
+
+	is_dupack=!(flag & (FLAG_SND_UNA_ADVANCED | FLAG_NOT_DUP));
+		tv=ktime_to_timespec(p.tstamp);
+	printk(KERN_INFO "%lu.%09lu %pISpc %pISpc %u %u %u %u %u %u %u %u %#x %#x %u %u %u %u\n",
+			(unsigned long)tv.tv_sec,
+			(unsigned long)tv.tv_nsec,
+			&(p.src), &(p.dst), p.snd_nxt, p.snd_una,
+			p.snd_cwnd,tp->snd_ssthresh, p.snd_wnd, p.ack_seq,p.ack,tp->high_seq,flag,icsk->icsk_ca_state,tp->packets_out,
+			tp->sacked_out,tp->lost_out,tp->retrans_out);
+
 	/* Advance cwnd if state allows */
-	if (tcp_may_raise_cwnd(sk, flag))
+	//added by zhuo when in ca_loss not increase cwnd
+	if (tcp_may_raise_cwnd(sk, flag) && icsk->icsk_ca_state != TCP_CA_Loss)
 		tcp_cong_avoid(sk, ack, acked);
 
 	if (tcp_ack_is_dubious(sk, flag)) {

@@ -2652,7 +2652,9 @@ static bool tcp_can_forward_retransmit(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 
 	/* Forward retransmissions are possible only during Recovery. */
-	if (icsk->icsk_ca_state != TCP_CA_Recovery)
+//	if (icsk->icsk_ca_state != TCP_CA_Recovery)
+//enable forward transmission when in state cwr
+	if (icsk->icsk_ca_state != TCP_CA_Recovery && icsk->icsk_ca_state != TCP_CA_CWR)
 		return false;
 
 	/* No forward retransmissions in Reno are possible. */
