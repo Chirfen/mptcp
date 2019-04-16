@@ -71,6 +71,9 @@ struct tcp_log {
 	u32	snd_cwnd;
 	u32	ssthresh;
 	u32	srtt;
+	int	cwnd_quota;
+	u8	snd_wnd_allow;
+	u8	state;
 };
 
 static struct {
@@ -100,6 +103,44 @@ static inline int tcp_probe_avail(void)
 		si4.sin_addr.s_addr = inet->inet_##mem##addr;	\
 	} while (0)						\
 
+//added for log receiver window
+//tcp_current_mss defined in tcp.h
+
+/* Can at least one segment of SKB be sent right now, according to the
+ * congestion window rules?  If so, return how many segments are allowed.
+ */
+unsigned int tcp_cwnd_test(const struct tcp_sock *tp,
+			   const struct sk_buff *skb)
+{
+	u32 in_flight, cwnd;
+
+	/* Don't be strict about the congestion window for the final FIN.  */
+	if (skb &&
+	    (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN) &&
+	    tcp_skb_pcount(skb) == 1)
+		return 1;
+
+	in_flight = tcp_packets_in_flight(tp);
+	cwnd = tp->snd_cwnd;
+	if (in_flight < cwnd)
+		return (cwnd - in_flight);
+
+	return 0;
+}
+
+/* Does at least the first segment of SKB fit into the send window? */
+bool tcp_snd_wnd_test(const struct tcp_sock *tp, const struct sk_buff *skb,
+		      unsigned int cur_mss)
+{
+	u32 end_seq = TCP_SKB_CB(skb)->end_seq;
+
+	if (skb->len > cur_mss)
+		end_seq = TCP_SKB_CB(skb)->seq + cur_mss;
+
+	return !after(end_seq, tcp_wnd_end(tp));
+}
+//end addition for log receiver window
+
 /*
  * Hook inserted to be called before each receive packet.
  * Note: arguments must match tcp_rcv_established()!
@@ -109,6 +150,8 @@ static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_sock *inet = inet_sk(sk);
+
+	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	/* Only update if port or skb mark matches */
 	if (((port == 0 && fwmark == 0) ||
@@ -155,6 +198,14 @@ static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			p->srtt = tp->srtt_us >> 3;
 
 			tcp_probe.head = (tcp_probe.head + 1) & (bufsize - 1);
+			
+			p->cwnd_quota = tcp_cwnd_test(tp, skb);
+			if (tcp_snd_wnd_test(tp, skb, tcp_current_mss(sk)))
+				p->snd_wnd_allow=1;
+			else
+				p->snd_wnd_allow=0;
+			p->state=icsk->icsk_ca_state;
+			
 		}
 		tcp_probe.lastcwnd = tp->snd_cwnd;
 		spin_unlock(&tcp_probe.lock);
@@ -191,11 +242,11 @@ static int tcpprobe_sprint(char *tbuf, int n)
 		= ktime_to_timespec(ktime_sub(p->tstamp, tcp_probe.start));
 
 	return scnprintf(tbuf, n,
-			"%lu.%09lu %pISpc %pISpc %d %#x %#x %u %u %u %u %u\n",
+			"%lu.%09lu %pISpc %pISpc %d %#x %#x %u %u %u %u %u %d %u %u\n",
 			(unsigned long)tv.tv_sec,
 			(unsigned long)tv.tv_nsec,
 			&p->src, &p->dst, p->length, p->snd_nxt, p->snd_una,
-			p->snd_cwnd, p->ssthresh, p->snd_wnd, p->srtt, p->rcv_wnd);
+			p->snd_cwnd, p->ssthresh, p->snd_wnd, p->srtt, p->rcv_wnd,p->cwnd_quota,p->snd_wnd_allow,p->state);
 }
 
 static ssize_t tcpprobe_read(struct file *file, char __user *buf,
