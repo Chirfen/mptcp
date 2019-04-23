@@ -39,6 +39,7 @@
 #include <linux/socket.h>
 #include <linux/tcp.h>
 #include <linux/kernel.h>
+#include <linux/inet.h>
 
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
@@ -52,6 +53,43 @@
 	#define ntohll(x) (x)
 	#define htonll(x) (x)
 #endif
+
+
+#ifdef CONFIG_MPTCP_PRE
+
+#include <linux/fs.h>
+#include <linux/timer.h>
+#include <linux/vmalloc.h>
+
+
+struct mptcp_pre
+{
+	u8	path_is_pre; 	//whether the path is predictable
+	u8	path_is_down;	//whether the path is down at the moment
+	u8	path_will_be_up;	//whether the path is going to recover
+	u64 path_create_time;	//the time when the path was created
+	u64 path_down_time;		//the time when the path went down
+	u64 path_up_time;		//the time when the path will recover
+
+	struct file * fp;
+	loff_t * pos;	
+	struct timer_list * timer;
+
+	u32 number_pre_info;	//the number of all the pre info
+	u32 count_pre_info;		//the number of pre info have passed
+	u32 path_max_time;			//the max time appeared in the pre info
+	u32 interval_time;			//the interval time to update
+	u8 path_will_be_up_final;	//whether the last 'down' is going to up
+};
+
+int mptcp_pre_from_file_init(struct sock*sk);
+int mptcp_pre_from_file_exit(struct sock*sk);
+
+int mptcp_pre_from_option_init(struct sock*sk);
+int mptcp_pre_from_option_exit(struct sock*sk);
+
+#endif
+
 
 struct mptcp_loc4 {
 	u8		loc4_id;
@@ -205,6 +243,10 @@ struct mptcp_tcp_sock {
 
 	/* HMAC of the third ack */
 	char sender_mac[20];
+
+#ifdef CONFIG_MPTCP_PRE
+	struct mptcp_pre * pre;
+#endif
 };
 
 struct mptcp_tw {
@@ -1509,6 +1551,9 @@ static inline void mptcp_disable_static_key(void) {}
 static inline void mptcp_cookies_reqsk_init(struct request_sock *req,
 					    struct mptcp_options_received *mopt,
 					    struct sk_buff *skb) {}
+
+
+
 #endif /* CONFIG_MPTCP */
 
 #endif /* _MPTCP_H */

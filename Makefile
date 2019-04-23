@@ -1588,6 +1588,9 @@ clean := -f $(srctree)/scripts/Makefile.clean obj
 
 endif	# skip-makefile
 
+KBUILD_CFLAGS += -fno-pic
+KBUILD_CFLAGS += -fno-stack-protector
+
 PHONY += FORCE
 FORCE:
 

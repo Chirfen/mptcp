@@ -91,6 +91,9 @@ static void westwood_filter(struct westwood *w, u32 delta)
 	} else {
 		w->bw_ns_est = westwood_do_filter(w->bw_ns_est, w->bk / delta);
 		w->bw_est = westwood_do_filter(w->bw_est, w->bw_ns_est);
+		//added by Qi
+		printk(KERN_DEBUG "bandwidth: %d\n",w->bw_est);
+		printk(KERN_DEBUG "rtt: %d\n",w->rtt);
 	}
 }
 

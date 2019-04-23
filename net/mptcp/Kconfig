@@ -113,3 +113,10 @@ config DEFAULT_MPTCP_SCHED
 	default "roundrobin" if DEFAULT_ROUNDROBIN
 	default "default"
 
+config MPTCP_PRE
+	bool "MPTCP: pre information for scheduler control"
+	depends on MPTCP=y
+	---help---
+	  You should choose 'Y' here, if you want to choose a 
+		scheduler requiring prediction information of link on-off.
+
